@@ -7,6 +7,7 @@ import { useLoader } from '../loader/LoaderContext';
 import Swal from 'sweetalert2';
 import statejosn from './statedistrict.json';
 import { BASE_URL as localprimeBase } from '../config/api';
+import { compressImage } from '../utils/imageCompressor';
 
 const toast = {
   success: (msg) => {
@@ -50,6 +51,9 @@ const MemberApplicationForm = () => {
   const [aadharVerified, setAadharVerified] = useState(false);
   const [aadharChecking, setAadharChecking] = useState(false);
   const [aadharStatus, setAadharStatus] = useState(null); // 'ok' | 'duplicate' | null
+  const [fetchingPin, setFetchingPin] = useState(false);
+  const [fetchingCpin, setFetchingCpin] = useState(false);
+  const [compressingStatus, setCompressingStatus] = useState({});
 
   const loaderCtx = useLoader();
   const showLoader = loaderCtx?.showLoader || (() => { });
@@ -257,10 +261,102 @@ const MemberApplicationForm = () => {
     }
   }, [aadhardata]);
 
+  // Auto-fetch location from Postal Pincode API for Address
+  const handlePincodeChange = async (val, isCorrespondence = false) => {
+    const cleanPin = val.replace(/\D/g, '').slice(0, 6);
+
+    if (isCorrespondence) {
+      setformdata((prev) => ({ ...prev, cpincode: cleanPin }));
+    } else {
+      setformdata((prev) => ({
+        ...prev,
+        pincode: cleanPin,
+        ...(prev.sameaddress ? { cpincode: cleanPin } : {}),
+      }));
+    }
+
+    if (cleanPin.length === 6) {
+      if (isCorrespondence) setFetchingCpin(true);
+      else setFetchingPin(true);
+
+      try {
+        const res = await axios.get(`https://api.postalpincode.in/pincode/${cleanPin}`);
+        if (res.data && res.data[0] && res.data[0].Status === 'Success' && res.data[0].PostOffice?.length > 0) {
+          const po = res.data[0].PostOffice[0];
+          const apiState = po.State || '';
+          const apiDistrict = po.District || '';
+          const apiCity = po.District || po.Block || po.Name || '';
+
+          const matchedState = statejosn.find((s) => s.state?.toLowerCase() === apiState.toLowerCase())?.state || apiState;
+          const stateObj = statejosn.find((s) => s.state?.toLowerCase() === (matchedState || '').toLowerCase());
+          const matchedDistrict = stateObj?.districts?.find((d) => d.toLowerCase() === apiDistrict.toLowerCase()) || apiDistrict;
+
+          if (isCorrespondence) {
+            setformdata((prev) => ({
+              ...prev,
+              cstate: matchedState,
+              cdistrict: matchedDistrict,
+              ccity: prev.ccity || apiCity,
+            }));
+          } else {
+            setformdata((prev) => ({
+              ...prev,
+              state: matchedState,
+              district: matchedDistrict,
+              city: prev.city || apiCity,
+              ...(prev.sameaddress
+                ? {
+                    cstate: matchedState,
+                    cdistrict: matchedDistrict,
+                    ccity: prev.ccity || apiCity,
+                  }
+                : {}),
+            }));
+          }
+          toast.success(`Location: ${matchedDistrict}, ${matchedState}`);
+        } else {
+          toast.error(`Pincode ${cleanPin} not found`);
+        }
+      } catch (err) {
+        console.warn('Pincode fetch error:', err);
+      } finally {
+        if (isCorrespondence) setFetchingCpin(false);
+        else setFetchingPin(false);
+      }
+    }
+  };
+
   const create = async (e) => {
     e.preventDefault();
     console.log('create started', formdata);
     showLoader();
+
+    // Ensure all 5 images are compressed to keep total request size well within Nginx 1MB limit
+    let compressedPhoto = formdata.photo;
+    let compressedIdFront = formdata.idfront;
+    let compressedIdBack = formdata.idback;
+    let compressedAddFront = formdata.addfront;
+    let compressedAddBack = formdata.addback;
+
+    try {
+      if (compressedPhoto && typeof compressedPhoto === 'object') {
+        compressedPhoto = await compressImage(compressedPhoto);
+      }
+      if (compressedIdFront && typeof compressedIdFront === 'object') {
+        compressedIdFront = await compressImage(compressedIdFront);
+      }
+      if (compressedIdBack && typeof compressedIdBack === 'object') {
+        compressedIdBack = await compressImage(compressedIdBack);
+      }
+      if (compressedAddFront && typeof compressedAddFront === 'object') {
+        compressedAddFront = await compressImage(compressedAddFront);
+      }
+      if (compressedAddBack && typeof compressedAddBack === 'object') {
+        compressedAddBack = await compressImage(compressedAddBack);
+      }
+    } catch (compressErr) {
+      console.warn('Pre-submit compression warning:', compressErr);
+    }
 
     const formDataPayload = new FormData();
 
@@ -324,39 +420,48 @@ const MemberApplicationForm = () => {
     formDataPayload.append('Status', 'Active');
 
     // Image Uploads (Multipart Files)
-    if (formdata.photo) {
-      formDataPayload.append('photo', formdata.photo);
-      formDataPayload.append('UploadPhoto', formdata.photo);
+    // Note: Backend multer saves UploadPhoto, UploadId, UploadId2, UploadAddress, UploadAddress2 to S3
+    if (compressedPhoto) {
+      const name = compressedPhoto.name || 'photo.jpg';
+      formDataPayload.append('UploadPhoto', compressedPhoto, name);
+      formDataPayload.append('photo', compressedPhoto, name);
     }
-    if (formdata.idfront) {
-      formDataPayload.append('idfront', formdata.idfront);
-      formDataPayload.append('UploadId', formdata.idfront);
+    if (compressedIdFront) {
+      const name = compressedIdFront.name || 'idfront.jpg';
+      formDataPayload.append('UploadId', compressedIdFront, name);
+      formDataPayload.append('idfront', compressedIdFront, name);
     }
-    if (formdata.idback) {
-      formDataPayload.append('idback', formdata.idback);
-      formDataPayload.append('UploadId2', formdata.idback);
+    if (compressedIdBack) {
+      const name = compressedIdBack.name || 'idback.jpg';
+      formDataPayload.append('UploadId2', compressedIdBack, name);
+      formDataPayload.append('idback', compressedIdBack, name);
     }
-    if (formdata.addfront) {
-      formDataPayload.append('addfront', formdata.addfront);
-      formDataPayload.append('UploadAddress', formdata.addfront);
+    if (compressedAddFront) {
+      const name = compressedAddFront.name || 'addfront.jpg';
+      formDataPayload.append('UploadAddress', compressedAddFront, name);
+      formDataPayload.append('addfront', compressedAddFront, name);
     }
-    if (formdata.addback) {
-      formDataPayload.append('addback', formdata.addback);
-      formDataPayload.append('UploadAddress2', formdata.addback);
+    if (compressedAddBack) {
+      const name = compressedAddBack.name || 'addback.jpg';
+      formDataPayload.append('UploadAddress2', compressedAddBack, name);
+      formDataPayload.append('addback', compressedAddBack, name);
     }
 
     console.log('--- Multipart FormData Payload Entries ---');
     for (let pair of formDataPayload.entries()) {
-      console.log(pair[0] + ':', pair[1]);
+      console.log(pair[0] + ':', typeof pair[1] === 'object' ? `${pair[1].name} (${pair[1].size} bytes)` : pair[1]);
     }
 
     const api = `${localprimeBase}/create-member-request`;
-    console.log(formDataPayload)
+    console.log('Sending member request to:', api);
     try {
+      const headers = {
+        ...(localprimeBase.includes('ngrok') ? { 'ngrok-skip-browser-warning': 'true' } : {}),
+      };
+
       const res = await axios.post(api, formDataPayload, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers,
+        timeout: 60000,
       });
 
       console.log('Create Member Request API Success Response:', res.data);
@@ -367,10 +472,21 @@ const MemberApplicationForm = () => {
         branch: formdata.branch,
         branchname: formdata.branchname,
       });
+      setCompressingStatus({});
       settab(1);
     } catch (error) {
       console.error('Error creating member request:', error);
-      toast.error(error?.response?.data?.message || 'Failed to submit member request');
+      let errorMsg = 'Failed to submit member request';
+      if (error?.response?.status === 413) {
+        errorMsg = 'Uploaded files are too large. Please select smaller images or lower resolution.';
+      } else if (error.message === 'Network Error') {
+        errorMsg = 'Network Error: Request failed. Please check internet connection or image file size.';
+      } else if (error?.response?.data?.message) {
+        errorMsg = error.response.data.message;
+      } else if (error?.message) {
+        errorMsg = error.message;
+      }
+      toast.error(errorMsg);
     } finally {
       hideLoader();
     }
@@ -639,14 +755,15 @@ const MemberApplicationForm = () => {
       {tab === 1 && (
         <form onSubmit={handleNext}>
           {/* ── Aadhaar Section (Manual Check Mode) ─────────────────────── */}
-          <div style={{ marginBottom: '12px' }}>
+          <div style={{ marginBottom: '16px' }}>
             <label style={labelStyle}>Aadhaar No. <span style={{ color: 'red' }}>*</span></label>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <input
                 required
                 value={formdata.aadharnumber}
                 onChange={(e) => {
-                  setformdata({ ...formdata, aadharnumber: e.target.value });
+                  const num = e.target.value.replace(/\D/g, '').slice(0, 12);
+                  setformdata({ ...formdata, aadharnumber: num });
                   // Reset verification status when user edits the number
                   setAadharVerified(false);
                   setAadharStatus(null);
@@ -656,32 +773,47 @@ const MemberApplicationForm = () => {
                 inputMode="numeric"
                 pattern="\d{12}"
                 placeholder="Enter 12-digit Aadhaar No."
-                style={{ ...inputStyle, flex: 1, letterSpacing: '2px' }}
+                style={{ ...inputStyle, flex: 1, letterSpacing: '2px', height: '42px', boxSizing: 'border-box' }}
               />
               <button
                 type="button"
                 onClick={checkAadharExists}
                 disabled={aadharChecking || formdata.aadharnumber.length !== 12}
                 style={{
-                  ...buttonStyle,
+                  height: '42px',
                   width: 'auto',
-                  marginBottom: 0,
-                  padding: '0 18px',
-                  opacity: (aadharChecking || formdata.aadharnumber.length !== 12) ? 0.6 : 1,
+                  padding: '0 20px',
+                  backgroundColor: aadharVerified ? '#16a34a' : '#385FBF',
+                  color: '#ffffff',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: '600',
+                  fontSize: '13px',
                   cursor: (aadharChecking || formdata.aadharnumber.length !== 12) ? 'not-allowed' : 'pointer',
-                  display: 'flex',
+                  opacity: (aadharChecking || formdata.aadharnumber.length !== 12) ? 0.6 : 1,
+                  display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
+                  justifyContent: 'center',
+                  gap: '8px',
+                  whiteSpace: 'nowrap',
+                  boxShadow: aadharVerified ? '0 2px 6px rgba(22, 163, 74, 0.3)' : '0 2px 6px rgba(56, 95, 191, 0.3)',
+                  transition: 'all 0.2s ease',
+                  boxSizing: 'border-box',
                 }}
               >
                 {aadharChecking ? (
                   <>
-                    <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: 12 }} />
+                    <i className="fa-solid fa-spinner fa-spin" style={{ fontSize: 13 }} />
                     Checking...
+                  </>
+                ) : aadharVerified ? (
+                  <>
+                    <i className="fa-solid fa-circle-check" style={{ fontSize: 13 }} />
+                    Verified
                   </>
                 ) : (
                   <>
-                    <i className="fa-solid fa-shield-halved" style={{ fontSize: 12 }} />
+                    <i className="fa-solid fa-shield-halved" style={{ fontSize: 13 }} />
                     Verify Aadhaar
                   </>
                 )}
@@ -791,10 +923,20 @@ const MemberApplicationForm = () => {
                     required
                     disabled={field.name === 'age'}
                     value={formdata[field.name]}
-                    onChange={(e) => setformdata({ ...formdata, [field.name]: e.target.value })}
+                    maxLength={field.name === 'mobile' ? 10 : undefined}
+                    inputMode={field.name === 'mobile' ? 'numeric' : undefined}
+                    placeholder={field.name === 'mobile' ? 'Enter 10-digit mobile number' : undefined}
+                    onChange={(e) => {
+                      let val = e.target.value;
+                      if (field.name === 'mobile') {
+                        val = val.replace(/\D/g, '').slice(0, 10);
+                      }
+                      setformdata({ ...formdata, [field.name]: val });
+                    }}
                     type={field.type || 'text'}
                     style={inputStyle}
                     pattern={field.type === 'tel' ? '[6-9]{1}[0-9]{9}' : undefined}
+                    title={field.name === 'mobile' ? 'Please enter a valid 10-digit mobile number' : undefined}
                   />
                 )}
               </div>
@@ -841,10 +983,17 @@ const MemberApplicationForm = () => {
                 name: 'district',
                 options: (statejosn.find((s) => s.state === formdata.state) || statejosn[0])?.districts || [],
               },
-              { label: 'Pin Code', name: 'pincode', type: 'number' },
+              { label: 'Pin Code', name: 'pincode', type: 'text' },
             ].map((field, idx) => (
               <div key={idx} style={formItem}>
-                <label style={labelStyle}>{field.label}</label>
+                <label style={labelStyle}>
+                  {field.label}
+                  {field.name === 'pincode' && fetchingPin && (
+                    <span style={{ fontSize: '11px', color: '#385FBF', marginLeft: '8px', fontWeight: 'normal' }}>
+                      <i className="fa-solid fa-spinner fa-spin" /> Fetching location...
+                    </span>
+                  )}
+                </label>
                 {field.type === 'select' ? (
                   <select
                     required
@@ -861,7 +1010,16 @@ const MemberApplicationForm = () => {
                   <input
                     required
                     value={formdata[field.name]}
-                    onChange={(e) => setformdata({ ...formdata, [field.name]: e.target.value })}
+                    maxLength={field.name === 'pincode' ? 6 : undefined}
+                    inputMode={field.name === 'pincode' ? 'numeric' : undefined}
+                    placeholder={field.name === 'pincode' ? 'Enter 6-digit Pincode' : undefined}
+                    onChange={(e) => {
+                      if (field.name === 'pincode') {
+                        handlePincodeChange(e.target.value, false);
+                      } else {
+                        setformdata({ ...formdata, [field.name]: e.target.value });
+                      }
+                    }}
                     type={field.type || 'text'}
                     style={inputStyle}
                   />
@@ -899,10 +1057,17 @@ const MemberApplicationForm = () => {
                 name: 'cdistrict',
                 options: (statejosn.find((s) => s.state === formdata.cstate) || statejosn[0])?.districts || [],
               },
-              { label: 'Pin Code', name: 'cpincode', type: 'number' },
+              { label: 'Pin Code', name: 'cpincode', type: 'text' },
             ].map((field, idx) => (
               <div key={idx} style={formItem}>
-                <label style={labelStyle}>{field.label}</label>
+                <label style={labelStyle}>
+                  {field.label}
+                  {field.name === 'cpincode' && fetchingCpin && (
+                    <span style={{ fontSize: '11px', color: '#385FBF', marginLeft: '8px', fontWeight: 'normal' }}>
+                      <i className="fa-solid fa-spinner fa-spin" /> Fetching location...
+                    </span>
+                  )}
+                </label>
                 {field.type === 'select' ? (
                   <select
                     required
@@ -918,8 +1083,18 @@ const MemberApplicationForm = () => {
                 ) : (
                   <input
                     required
+                    disabled={formdata.sameaddress}
                     value={formdata[field.name]}
-                    onChange={(e) => setformdata({ ...formdata, [field.name]: e.target.value })}
+                    maxLength={field.name === 'cpincode' ? 6 : undefined}
+                    inputMode={field.name === 'cpincode' ? 'numeric' : undefined}
+                    placeholder={field.name === 'cpincode' ? 'Enter 6-digit Pincode' : undefined}
+                    onChange={(e) => {
+                      if (field.name === 'cpincode') {
+                        handlePincodeChange(e.target.value, true);
+                      } else {
+                        setformdata({ ...formdata, [field.name]: e.target.value });
+                      }
+                    }}
                     type={field.type || 'text'}
                     style={inputStyle}
                   />
@@ -1120,18 +1295,42 @@ const MemberApplicationForm = () => {
                     ))}
                   </select>
                 ) : field.type === 'file' ? (
-                  <input
-                    required
-                    type="file"
-                    accept="image/*"
-                    onChange={(e) => {
-                      const file = e.target.files[0];
-                      if (file) {
-                        setformdata({ ...formdata, [field.name]: file });
-                      }
-                    }}
-                    style={inputStyle}
-                  />
+                  <div style={{ width: '100%' }}>
+                    <input
+                      required
+                      type="file"
+                      accept="image/*"
+                      onChange={async (e) => {
+                        const file = e.target.files[0];
+                        if (file) {
+                          setCompressingStatus((prev) => ({ ...prev, [field.name]: 'compressing' }));
+                          try {
+                            const compressed = await compressImage(file);
+                            setformdata((prev) => ({ ...prev, [field.name]: compressed }));
+                            setCompressingStatus((prev) => ({
+                              ...prev,
+                              [field.name]: `Ready (${(compressed.size / 1024).toFixed(0)} KB)`,
+                            }));
+                          } catch (err) {
+                            console.warn('Compress failed, using original', err);
+                            setformdata((prev) => ({ ...prev, [field.name]: file }));
+                            setCompressingStatus((prev) => ({ ...prev, [field.name]: 'ready' }));
+                          }
+                        }
+                      }}
+                      style={inputStyle}
+                    />
+                    {compressingStatus[field.name] === 'compressing' && (
+                      <span style={{ fontSize: '11px', color: '#385FBF', marginTop: '4px', display: 'inline-block' }}>
+                        <i className="fa-solid fa-spinner fa-spin" /> Compressing image...
+                      </span>
+                    )}
+                    {compressingStatus[field.name] && compressingStatus[field.name].startsWith('Ready') && (
+                      <span style={{ fontSize: '11px', color: '#16a34a', marginTop: '4px', display: 'inline-block', fontWeight: '500' }}>
+                        <i className="fa-solid fa-circle-check" /> {compressingStatus[field.name]}
+                      </span>
+                    )}
+                  </div>
                 ) : (
                   <input
                     required

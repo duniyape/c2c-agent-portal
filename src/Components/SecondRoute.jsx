@@ -4,6 +4,7 @@ import { useLoader } from "../loader/LoaderContext";
 import { toast } from "react-toastify";
 import axios from "axios";
 import { BASE_URL, DOMAIN, API_URL } from "../config/api";
+import { compressImage } from "../utils/imageCompressor";
 
 const WalletScreen = () => {
   const { showLoader, hideLoader } = useLoader();
@@ -35,6 +36,7 @@ const WalletScreen = () => {
   const [amount, setamount] = useState('');
   const [proofurl, setproofurl] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [compressingProof, setCompressingProof] = useState(false);
   const [loaderreq, setloaderreq] = useState(false);
   const [bankledger, setbankledger] = useState('');
   const [lData, setlData] = useState([]);
@@ -240,9 +242,14 @@ const WalletScreen = () => {
     setloaderreq(true);
 
     try {
-      // 1. Upload doc/image to AWS S3 endpoint
+      // 1. Ensure proof image is compressed (< 100KB) to avoid Nginx 1MB 413 error
+      let fileToUpload = selectedFile;
+      if (fileToUpload && typeof fileToUpload === 'object') {
+        fileToUpload = await compressImage(fileToUpload);
+      }
+
       const formData = new FormData();
-      formData.append("image", selectedFile);
+      formData.append("image", fileToUpload, fileToUpload?.name || "slip.jpg");
 
       const uploadRes = await axios.post(`${DOMAIN}/duniyape/aws/upload`, formData, {
         headers: {
@@ -326,7 +333,18 @@ const WalletScreen = () => {
       }
     } catch (error) {
       console.error("Error submitting deposit request:", error);
-      const errMsg = error.response?.data?.message || error.response?.data?.error || error.message || "Failed to submit request";
+      let errMsg = "Failed to submit request";
+      if (error?.response?.status === 413) {
+        errMsg = "Deposit slip file is too large. Please select a smaller photo or screenshot.";
+      } else if (error.message === "Network Error") {
+        errMsg = "Network Error: Upload failed. Please check your internet connection or image size.";
+      } else if (error.response?.data?.message) {
+        errMsg = error.response.data.message;
+      } else if (error.response?.data?.error) {
+        errMsg = error.response.data.error;
+      } else if (error.message) {
+        errMsg = error.message;
+      }
       toast.error(errMsg);
     } finally {
       setloaderreq(false);
@@ -672,17 +690,31 @@ const WalletScreen = () => {
                     required
                     type="file"
                     accept="image/*"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const file = e.target.files && e.target.files[0];
                       if (file) {
-                        setSelectedFile(file);
+                        setCompressingProof(true);
+                        try {
+                          const compressed = await compressImage(file);
+                          setSelectedFile(compressed);
+                        } catch (err) {
+                          console.warn('Compression fallback:', err);
+                          setSelectedFile(file);
+                        } finally {
+                          setCompressingProof(false);
+                        }
                       }
                     }}
                     style={inputStyle}
                   />
-                  {selectedFile && (
+                  {compressingProof && (
+                    <div style={{ fontSize: '12px', color: '#385FBF', marginTop: '4px' }}>
+                      <i className="fa-solid fa-spinner fa-spin" /> Compressing image...
+                    </div>
+                  )}
+                  {selectedFile && !compressingProof && (
                     <div style={{ fontSize: '12px', color: '#2e7d32', marginTop: '4px', fontWeight: 'bold' }}>
-                      ✓ Selected: {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
+                      ✓ Ready: {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
                     </div>
                   )}
                 </div>

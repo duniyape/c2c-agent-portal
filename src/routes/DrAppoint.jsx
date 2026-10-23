@@ -11,19 +11,29 @@ import { DOMAIN, API_BASE_URL, BASE_URL } from '../config/api';
  * ⚙️ API CONFIGURATION (CENTRALIZED FROM api.js)
  * =========================================================================
  */
-const PRIMARY_BASE_URL = DOMAIN || API_BASE_URL;
 const RAZORPAY_KEY = 'rzp_test_TlMQdAmmaO6PuE';
 
 // Dynamic API caller that interfaces with primary server without triggering cross-origin fallback errors
 const apiRequest = async (endpoint, method = 'get', payload = null) => {
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const baseUrl = (DOMAIN || API_BASE_URL || '').replace(/\/+$/, '');
+  const isNgrok = typeof baseUrl === 'string' && (baseUrl.includes('ngrok') || baseUrl.includes('ngrok-free.app'));
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (isNgrok) {
+    headers['ngrok-skip-browser-warning'] = 'true';
+  }
+
+  console.log(`[apiRequest] ${method.toUpperCase()} -> ${baseUrl}${cleanEndpoint}`);
 
   const res = await axios({
-    url: `${PRIMARY_BASE_URL}${cleanEndpoint}`,
+    url: `${baseUrl}${cleanEndpoint}`,
     method,
     data: payload,
     timeout: 45000,
-    headers: { 'ngrok-skip-browser-warning': 'true' },
+    headers,
   });
   return res.data;
 };
@@ -101,12 +111,36 @@ const DrAppoint = () => {
   const [walletDbId, setWalletDbId] = useState('');
   const [markupAmount, setMarkupAmount] = useState(0);
 
+  // Payment Method & UPI Payment Link State ('wallet' or 'upi')
+  const [paymentMethod, setPaymentMethod] = useState('wallet');
+  const [isCreatingPaymentLink, setIsCreatingPaymentLink] = useState(false);
+  const [paymentLinkModalData, setPaymentLinkModalData] = useState(null);
+  const [showPaymentLinkModal, setShowPaymentLinkModal] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  // Helper to extract clean human-readable agent code (e.g. AG001), NEVER a 24-char MongoDB ObjectId
+  const getAgentCode = () => {
+    const auid = (localStorage.getItem('AUID') || '').trim();
+    if (auid && !/^[a-f\d]{24}$/i.test(auid)) return auid;
+    const acode = (localStorage.getItem('agentCode') || '').trim();
+    if (acode && !/^[a-f\d]{24}$/i.test(acode)) return acode;
+    return 'AG001';
+  };
+
   // Helper to extract clean numeric fee from selected doctor
   const getNumericFee = () => {
     if (!selectedDoctor) return 0;
-    const feeRaw = selectedDoctor.appointmentfee || selectedDoctor.fee || 0;
+    const feeRaw =
+      selectedDoctor.appointmentfee ||
+      selectedDoctor.fees ||
+      selectedDoctor.doctorfee ||
+      selectedDoctor.fee ||
+      selectedDoctor.secondappointmentfee ||
+      selectedDoctor.consultation_fee ||
+      0;
     const cleaned = String(feeRaw).replace(/[^0-9.]/g, '');
-    return parseFloat(cleaned) || 0;
+    const num = parseFloat(cleaned);
+    return !isNaN(num) && num > 0 ? num : 0;
   };
 
   // Fetch Agent Saving Wallet Balance directly by agent_id
@@ -116,7 +150,7 @@ const DrAppoint = () => {
     try {
       const headers = { 'ngrok-skip-browser-warning': 'true' };
       let mongoId = agentMongoId || localStorage.getItem('agent_id');
-      const rawAgentCode = localStorage.getItem('AUID') || 'AG001';
+      const rawAgentCode = getAgentCode();
 
       // If mongoId is not cached or invalid, resolve agent_id from agentCode
       if (!mongoId || !/^[a-f\d]{24}$/i.test(mongoId)) {
@@ -156,6 +190,10 @@ const DrAppoint = () => {
             ? Number(respData.agent.markup_amount)
             : 0;
           setMarkupAmount(mAmount);
+          try {
+            sessionStorage.setItem('c2c_agent_markup', String(mAmount));
+            localStorage.setItem('c2c_agent_markup', String(mAmount));
+          } catch (_) { }
 
           if (wallet) {
             const bal = wallet.balance !== undefined ? Number(wallet.balance) : 0;
@@ -280,8 +318,9 @@ const DrAppoint = () => {
     try {
       let found = null;
 
-      // 1. Direct call to PRIMARY_BASE_URL for doctor ID search
-      const doctorIdApiUrl = `${PRIMARY_BASE_URL}/c2c_app/doctors/by-secondary-id?secondaryId=${encodeURIComponent(cleanId)}`;
+      // 1. Direct call to DOMAIN for doctor ID search
+      const currentBase = DOMAIN || API_BASE_URL;
+      const doctorIdApiUrl = `${currentBase}/c2c_app/doctors/by-secondary-id?secondaryId=${encodeURIComponent(cleanId)}`;
       console.log('Searching Doctor by ID from:', doctorIdApiUrl);
 
       try {
@@ -296,7 +335,7 @@ const DrAppoint = () => {
           found = res.data.data;
         }
       } catch (apiErr) {
-        console.warn(`Direct doctor ID search from ${PRIMARY_BASE_URL} error:`, apiErr.message);
+        console.warn(`Direct doctor ID search from ${currentBase} error:`, apiErr.message);
       }
 
       if (found) {
@@ -692,7 +731,7 @@ const DrAppoint = () => {
 
     setShowReviewModal(false);
 
-    const rawAgentId = localStorage.getItem('AUID') || 'AG001';
+    const agentCode = getAgentCode();
     showLoader();
 
     // Resolve Mongo ObjectId for backend agent saving wallet lookup
@@ -700,7 +739,7 @@ const DrAppoint = () => {
     let targetWalletId = walletDbId;
     if (!targetWalletId || !targetAgentId || !/^[a-f\d]{24}$/i.test(targetAgentId)) {
       try {
-        const detailsRes = await axios.get(`${BASE_URL}/saving-wallet/details?agent_id=${targetAgentId || rawAgentId}`, {
+        const detailsRes = await axios.get(`${BASE_URL}/saving-wallet/details?agent_id=${targetAgentId || agentCode}`, {
           timeout: 20000,
           headers: { 'ngrok-skip-browser-warning': 'true' },
         });
@@ -713,11 +752,12 @@ const DrAppoint = () => {
 
     const docId = selectedDoctor.mongoid || selectedDoctor.id;
     const appointmentPayload = {
-      agent_id: targetAgentId || rawAgentId,
-      agent_code: rawAgentId,
-      agentCode: rawAgentId,
-      agentId: rawAgentId,
-      wallet_id: targetWalletId || targetAgentId || rawAgentId,
+      agent_id: agentCode,
+      agent_code: agentCode,
+      agentCode: agentCode,
+      agentId: agentCode,
+      agent_mongo_id: targetAgentId || '',
+      wallet_id: targetWalletId || targetAgentId || agentCode,
       saving_wallet_id: targetWalletId || '',
       wallet_number: walletNumber || '',
       wallet_type: 'saving',
@@ -736,7 +776,7 @@ const DrAppoint = () => {
       email: formData.email.trim() || 'patient@care2connect.in',
       symptoms: formData.symptoms.trim() || 'Routine Consultation',
       age: formData.age || '25',
-      timestamp: Date.now(),
+      timestamp: String(Math.floor(Date.now() / 1000)),
       dob: formData.dob,
       date_of_birth: formData.dob,
       city: formData.city || 'District Center',
@@ -746,8 +786,12 @@ const DrAppoint = () => {
       sex: formData.gender,
       gender: formData.gender,
       vaccine: true,
-      amount: selectedDoctor.appointmentfee || selectedDoctor.fee || 250,
-      fee: selectedDoctor.appointmentfee || selectedDoctor.fee || 250,
+      amount: Number(numericFee.toFixed(2)),
+      total_amount: Number(totalPayable.toFixed(2)),
+      payable_amount: Number(totalPayable.toFixed(2)),
+      total_fee: Number(totalPayable.toFixed(2)),
+      fee: numericFee,
+      doctor_fee: numericFee,
       markup_amount: currentMarkup,
     };
 
@@ -912,10 +956,207 @@ const DrAppoint = () => {
     }
   };
 
+  // STEP 2B: CREATE ONLINE / UPI PAYMENT LINK VIA API (/c2c_app/api/create-payment-link)
+  const handleCreatePaymentLink = async () => {
+    const numericFee = getNumericFee();
+    const currentMarkup = Number(markupAmount || 0);
+    const totalPayable = numericFee + currentMarkup;
+
+    if (totalPayable <= 0) {
+      Swal.fire('Invalid Fee', 'Consultation fee must be greater than 0.', 'warning');
+      return;
+    }
+
+    if (!formData.patientName.trim()) {
+      Swal.fire('Patient Name Required', 'Please enter patient name before generating payment link.', 'warning');
+      return;
+    }
+
+    const cleanMobile = formData.mobileNumber.replace(/\D/g, '');
+    if (cleanMobile.length !== 10) {
+      Swal.fire('Invalid Mobile', 'Please enter a valid 10-digit mobile number.', 'warning');
+      return;
+    }
+
+    setIsCreatingPaymentLink(true);
+    showLoader();
+
+    const agentCode = getAgentCode();
+    const docId = selectedDoctor.mongoid || selectedDoctor.id;
+
+    const linkPayload = {
+      amount: Number(totalPayable.toFixed(2)),
+      total_amount: Number(totalPayable.toFixed(2)),
+      total_fee: Number(totalPayable.toFixed(2)),
+      name: formData.patientName.trim(),
+      patient_name: formData.patientName.trim(),
+      mobile: cleanMobile,
+      whatsapp_number: cleanMobile,
+      email: formData.email?.trim() || undefined,
+      description: `Doctor Consultation - ${selectedDoctor.name}`,
+      reference_id: `APPT_${Date.now().toString().slice(-8)}`,
+      agent_id: agentCode,
+      agent_code: agentCode,
+      agentId: agentCode,
+      agentCode: agentCode,
+      doctor_id: docId,
+      doctor_phone_id: docId,
+      doctor_name: selectedDoctor.name,
+      doctor_fee: numericFee,
+      fee: numericFee,
+      markup_amount: currentMarkup,
+      father_name: formData.fatherName?.trim() || '',
+      guardian_name: formData.fatherName?.trim() || '',
+      date: selectedDate,
+      time: selectedSlot,
+      patient_phone: cleanMobile,
+      age: formData.age || '',
+      dob: formData.dob || '',
+      date_of_birth: formData.dob || '',
+      sex: formData.gender || 'Male',
+      pincode: formData.pincode,
+      city: formData.city,
+      state: formData.state,
+      address: formData.address.trim(),
+      symptoms: formData.symptoms.trim(),
+      timestamp: String(Math.floor(Date.now() / 1000)),
+    };
+
+    console.log('Sending create-payment-link payload:', linkPayload);
+
+    try {
+      let res = null;
+      try {
+        res = await apiRequest('/c2c_app/api/create-payment-link', 'post', linkPayload);
+      } catch (callErr) {
+        if (callErr.response?.status === 404) {
+          res = await apiRequest('/api/create-payment-link', 'post', linkPayload);
+        } else {
+          throw callErr;
+        }
+      }
+
+      console.log('Payment link response:', res);
+
+      if (res && (res.success || res.payment_url)) {
+        const paymentUrl = res.payment_url || res.short_url || '';
+        const paymentLinkId = res.payment_link_id || res.id || '';
+        const appointmentId = res.appointment_id || res.appointment_reference || '';
+
+        setPaymentLinkModalData({
+          url: paymentUrl,
+          paymentLinkId: paymentLinkId,
+          appointmentId: appointmentId,
+          appointmentReference: res.appointment_reference || '',
+          amount: res.amount || totalPayable,
+          doctorName: selectedDoctor.name,
+          specialization: selectedDoctor.specialization || selectedDoctor.specialty || 'Consultant',
+          patientName: formData.patientName,
+          patientMobile: formData.mobileNumber,
+          date: selectedDate,
+          timeSlot: selectedSlot,
+          status: res.payment_status || res.status || 'created',
+        });
+
+        setShowReviewModal(false);
+        setShowPaymentLinkModal(true);
+      } else {
+        Swal.fire({
+          icon: 'error',
+          title: 'Payment Link Failed',
+          text: res?.message || 'Unable to generate payment link. Please try again.',
+          confirmButtonColor: '#385FBF',
+        });
+      }
+    } catch (err) {
+      console.error('Error generating payment link:', err);
+      const targetBase = DOMAIN || API_BASE_URL;
+      let errMsg = err.response?.data?.message || err.response?.data?.error || err.message;
+      if (err.message === 'Network Error' || !err.response) {
+        errMsg = `Network Error: Unable to reach backend server at ${targetBase}. Please verify the backend is running and hard-refresh your browser (Ctrl + Shift + R).`;
+      }
+      Swal.fire({
+        icon: 'error',
+        title: 'Payment Link Error',
+        text: errMsg,
+        confirmButtonColor: '#385FBF',
+      });
+    } finally {
+      setIsCreatingPaymentLink(false);
+      hideLoader();
+    }
+  };
+
+  const handleCopyLink = async (text) => {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    } catch (err) {
+      console.error('Failed to copy link:', err);
+    }
+  };
+
+  const handleShareWhatsApp = (data) => {
+    if (!data || !data.url) return;
+    const msg =
+      `🏥 *Care2Connect - Doctor Appointment Payment Link*\n\n` +
+      `Dear *${data.patientName}*,\n` +
+      `Your appointment booking has been initiated:\n\n` +
+      `👨‍⚕️ *Doctor:* ${data.doctorName} (${data.specialization})\n` +
+      `📅 *Date:* ${moment(data.date).format('DD MMM YYYY')}\n` +
+      `⏰ *Time Slot:* ${data.timeSlot}\n` +
+      `💰 *Total Amount Payable:* ₹${Number(data.amount).toFixed(2)}\n\n` +
+      `👉 *Click here to Pay securely via UPI / QR / Card:* \n${data.url}\n\n` +
+      `_Please complete payment to confirm your booking._`;
+
+    const cleanMobile = String(data.patientMobile || '').replace(/[^0-9]/g, '');
+    const phoneParam = cleanMobile.length === 10 ? `91${cleanMobile}` : cleanMobile;
+    const waUrl = phoneParam
+      ? `https://api.whatsapp.com/send?phone=${phoneParam}&text=${encodeURIComponent(msg)}`
+      : `https://api.whatsapp.com/send?text=${encodeURIComponent(msg)}`;
+
+    window.open(waUrl, '_blank');
+  };
+
+  const handleNativeShare = async (data) => {
+    if (!data || !data.url) return;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Appointment with ${data.doctorName}`,
+          text: `Payment link for Doctor Appointment with ${data.doctorName} (₹${Number(data.amount).toFixed(2)}):`,
+          url: data.url,
+        });
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          console.error('Share failed:', e);
+        }
+      }
+    } else {
+      handleCopyLink(data.url);
+    }
+  };
+
   const handleResetToNewBooking = () => {
     setBookedAppointment(null);
     setSelectedDoctor(null);
     setSelectedSlot('');
+    setPaymentLinkModalData(null);
+    setShowPaymentLinkModal(false);
+    setPaymentMethod('wallet');
     setFormData({
       patientName: '',
       fatherName: '',
@@ -1389,6 +1630,67 @@ const DrAppoint = () => {
              STEP 2: DOCTOR SELECTED & PATIENT DETAILS FORM (Only this is shown!)
              ========================================================================= */
           <>
+            {/* Active Payment Link Alert Banner */}
+            {paymentLinkModalData && !showPaymentLinkModal && (
+              <div style={{
+                backgroundColor: '#f0fdf4',
+                border: '1.5px solid #86efac',
+                borderRadius: '12px',
+                padding: '12px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                marginBottom: '16px',
+                boxShadow: '0 2px 6px rgba(22, 163, 74, 0.1)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{
+                    width: '34px',
+                    height: '34px',
+                    borderRadius: '50%',
+                    backgroundColor: '#dcfce7',
+                    color: '#16a34a',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '16px',
+                    flexShrink: 0
+                  }}>
+                    <i className="fa-solid fa-qrcode"></i>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: '700', color: '#166534' }}>
+                      Active Payment Link for {paymentLinkModalData.patientName} (₹{Number(paymentLinkModalData.amount || 0).toFixed(2)})
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#15803d' }}>
+                      Doctor: {paymentLinkModalData.doctorName} • {moment(paymentLinkModalData.date).format('DD MMM')}, {paymentLinkModalData.timeSlot}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentLinkModal(true)}
+                  style={{
+                    padding: '8px 14px',
+                    backgroundColor: '#16a34a',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: '700',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  <i className="fa-solid fa-eye"></i> View / Share
+                </button>
+              </div>
+            )}
+
             {/* Selected Doctor Summary Banner */}
             <div style={selectedDoctorBannerStyle}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -1997,8 +2299,122 @@ const DrAppoint = () => {
                 </div>
               </div>
 
-              {/* Agent Wallet Payment & Balance Status Card */}
-              {(() => {
+              {/* =========================================================
+                  PAYMENT METHOD SELECTOR
+                  ========================================================= */}
+              <div style={{ marginBottom: '16px' }}>
+                <div style={{
+                  fontSize: '12px',
+                  fontWeight: '700',
+                  color: '#475569',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  marginBottom: '8px'
+                }}>
+                  Payment Option
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
+                  {/* Option 1: Agent Wallet */}
+                  <div
+                    onClick={() => setPaymentMethod('wallet')}
+                    style={{
+                      border: `2px solid ${paymentMethod === 'wallet' ? '#385FBF' : '#e2e8f0'}`,
+                      backgroundColor: paymentMethod === 'wallet' ? '#eff6ff' : '#ffffff',
+                      borderRadius: '12px',
+                      padding: '12px 14px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      transition: 'all 0.15s ease-in-out',
+                      boxShadow: paymentMethod === 'wallet' ? '0 2px 8px rgba(56, 95, 191, 0.12)' : 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '36px',
+                        height: '36px',
+                        borderRadius: '10px',
+                        backgroundColor: paymentMethod === 'wallet' ? '#385FBF' : '#f1f5f9',
+                        color: paymentMethod === 'wallet' ? '#ffffff' : '#64748b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '16px',
+                      }}>
+                        <i className="fa-solid fa-wallet"></i>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: '700', color: paymentMethod === 'wallet' ? '#1e3a8a' : '#1e293b' }}>
+                          Agent Saving Wallet
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
+                          Instant wallet deduction
+                        </div>
+                      </div>
+                    </div>
+                    <input
+                      type="radio"
+                      name="paymentMethod"
+                      checked={paymentMethod === 'wallet'}
+                      onChange={() => setPaymentMethod('wallet')}
+                      style={{ width: '18px', height: '18px', accentColor: '#385FBF', cursor: 'pointer' }}
+                    />
+                  </div>
+
+                  {/* Option 2: UPI / Online Payment Link */}
+                  <div
+                    onClick={() => setPaymentMethod('upi')}
+                    style={{
+                      border: `2px solid ${paymentMethod === 'upi' ? '#16a34a' : '#e2e8f0'}`,
+                      backgroundColor: paymentMethod === 'upi' ? '#f0fdf4' : '#ffffff',
+                      borderRadius: '12px',
+                      padding: '12px 14px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      transition: 'all 0.15s ease-in-out',
+                      boxShadow: paymentMethod === 'upi' ? '0 2px 8px rgba(22, 163, 74, 0.15)' : 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '36px',
+                        height: '36px',
+                        borderRadius: '10px',
+                        backgroundColor: paymentMethod === 'upi' ? '#16a34a' : '#f1f5f9',
+                        color: paymentMethod === 'upi' ? '#ffffff' : '#64748b',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '16px',
+                      }}>
+                        <i className="fa-solid fa-qrcode"></i>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: '700', color: paymentMethod === 'upi' ? '#15803d' : '#1e293b' }}>
+                          UPI / Online Payment
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#64748b' }}>
+                          Generate Link & QR Code
+                        </div>
+                      </div>
+                    </div>
+                    <input
+                      type="radio"
+                      name="paymentMethod"
+                      checked={paymentMethod === 'upi'}
+                      onChange={() => setPaymentMethod('upi')}
+                      style={{ width: '18px', height: '18px', accentColor: '#16a34a', cursor: 'pointer' }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION: Agent Wallet Payment Details */}
+              {paymentMethod === 'wallet' && (() => {
                 const numericFee = getNumericFee();
                 const currentMarkup = Number(markupAmount || 0);
                 const totalPayable = numericFee + currentMarkup;
@@ -2125,9 +2541,97 @@ const DrAppoint = () => {
                     {!isSufficient && (
                       <div style={{ fontSize: '12px', color: '#b91c1c', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <i className="fa-solid fa-circle-exclamation"></i>
-                        Insufficient Wallet Balance! Required ₹{totalPayable.toFixed(2)}, Available ₹{Number(walletBalance || 0).toFixed(2)}. Payment nahi ho sakta.
+                        Insufficient Wallet Balance! Required ₹{totalPayable.toFixed(2)}, Available ₹{Number(walletBalance || 0).toFixed(2)}. Aap UPI Payment option select karke payment link create kar sakte hain.
                       </div>
                     )}
+                  </div>
+                );
+              })()}
+
+              {/* SECTION: UPI / Online Payment Link Details */}
+              {paymentMethod === 'upi' && (() => {
+                const numericFee = getNumericFee();
+                const currentMarkup = Number(markupAmount || 0);
+                const totalPayable = numericFee + currentMarkup;
+                return (
+                  <div style={{
+                    backgroundColor: '#f0fdf4',
+                    border: '1.5px solid #86efac',
+                    borderRadius: '12px',
+                    padding: '14px 16px',
+                    marginBottom: '16px',
+                  }}>
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      marginBottom: '10px'
+                    }}>
+                      <div style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '50%',
+                        backgroundColor: '#dcfce7',
+                        color: '#16a34a',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '15px'
+                      }}>
+                        <i className="fa-solid fa-qrcode"></i>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '13px', fontWeight: '700', color: '#166534' }}>
+                          UPI & Online Payment Gateway
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#15803d' }}>
+                          Direct payment link & QR generator (No wallet deduction)
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Fee, Markup & Total Payable Breakdown */}
+                    <div style={{
+                      backgroundColor: '#ffffff',
+                      borderRadius: '8px',
+                      border: '1px solid #bbf7d0',
+                      padding: '10px 14px',
+                      marginBottom: '10px',
+                      fontSize: '12px'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#475569' }}>
+                        <span>Doctor Consultation Fee:</span>
+                        <strong>₹{numericFee.toFixed(2)}</strong>
+                      </div>
+                      {currentMarkup > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', color: '#2563eb' }}>
+                          <span>Channel Partner Markup:</span>
+                          <strong>+ ₹{currentMarkup.toFixed(2)}</strong>
+                        </div>
+                      )}
+                      <div style={{ height: '1px', backgroundColor: '#e2e8f0', margin: '6px 0' }}></div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', color: '#15803d', fontWeight: '700' }}>
+                        <span>Total Payable:</span>
+                        <span>₹{totalPayable.toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    {/* Information Note */}
+                    <div style={{
+                      fontSize: '12px',
+                      color: '#166534',
+                      backgroundColor: '#dcfce7',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      border: '1px solid #bbf7d0',
+                      lineHeight: '1.4'
+                    }}>
+                      <div style={{ fontWeight: '700', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <i className="fa-solid fa-circle-check"></i>
+                        UPI Link & QR Code Banega
+                      </div>
+                      Payment link create hone ke baad aap ise patient ke WhatsApp par share kar sakte hain ya scan karwa kar kisi bhi UPI app (GPay, PhonePe, Paytm, BHIM) se payment karwa sakte hain.
+                    </div>
                   </div>
                 );
               })()}
@@ -2168,34 +2672,413 @@ const DrAppoint = () => {
                   const currentMarkup = Number(markupAmount || 0);
                   const totalPayable = numericFee + currentMarkup;
                   const isSufficient = walletBalance !== null && walletBalance >= totalPayable;
+
+                  if (paymentMethod === 'wallet') {
+                    return (
+                      <button
+                        type="button"
+                        disabled={!isSufficient || walletLoading}
+                        onClick={executeBookingAndPayment}
+                        style={{
+                          padding: '10px 22px',
+                          backgroundColor: isSufficient ? '#385FBF' : '#94a3b8',
+                          color: '#ffffff',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontWeight: '700',
+                          fontSize: '14px',
+                          cursor: isSufficient ? 'pointer' : 'not-allowed',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          boxShadow: isSufficient ? '0 4px 10px rgba(56, 95, 191, 0.3)' : 'none',
+                          opacity: isSufficient ? 1 : 0.7,
+                        }}
+                      >
+                        <i className={`fa-solid ${isSufficient ? 'fa-calendar-check' : 'fa-ban'}`}></i>
+                        {isSufficient
+                          ? `Pay ₹${totalPayable.toFixed(2)} via Wallet`
+                          : `Insufficient Balance (₹${Number(walletBalance || 0).toFixed(2)})`}
+                      </button>
+                    );
+                  }
+
+                  // UPI / Online Payment Link button
                   return (
                     <button
                       type="button"
-                      disabled={!isSufficient || walletLoading}
-                      onClick={executeBookingAndPayment}
+                      disabled={isCreatingPaymentLink}
+                      onClick={handleCreatePaymentLink}
                       style={{
                         padding: '10px 22px',
-                        backgroundColor: isSufficient ? '#385FBF' : '#94a3b8',
+                        backgroundColor: '#16a34a',
                         color: '#ffffff',
                         border: 'none',
                         borderRadius: '8px',
                         fontWeight: '700',
                         fontSize: '14px',
-                        cursor: isSufficient ? 'pointer' : 'not-allowed',
+                        cursor: isCreatingPaymentLink ? 'not-allowed' : 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         gap: '8px',
-                        boxShadow: isSufficient ? '0 4px 10px rgba(56, 95, 191, 0.3)' : 'none',
-                        opacity: isSufficient ? 1 : 0.7,
+                        boxShadow: '0 4px 12px rgba(22, 163, 74, 0.3)',
+                        opacity: isCreatingPaymentLink ? 0.7 : 1,
                       }}
                     >
-                      <i className={`fa-solid ${isSufficient ? 'fa-calendar-check' : 'fa-ban'}`}></i>
-                      {isSufficient
-                        ? `Pay ₹${totalPayable.toFixed(2)} & Confirm Booking`
-                        : `Insufficient Balance (₹${Number(walletBalance || 0).toFixed(2)})`}
+                      <i className={`fa-solid ${isCreatingPaymentLink ? 'fa-spinner fa-spin' : 'fa-qrcode'}`}></i>
+                      {isCreatingPaymentLink
+                        ? 'Generating Link...'
+                        : `Generate UPI Link (₹${totalPayable.toFixed(2)})`}
                     </button>
                   );
                 })()}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =========================================================================
+          UPI / ONLINE PAYMENT LINK DISPLAY MODAL
+          ========================================================================= */}
+      {showPaymentLinkModal && paymentLinkModalData && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100vw',
+          height: '100vh',
+          backgroundColor: 'rgba(15, 23, 42, 0.7)',
+          backdropFilter: 'blur(5px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+          padding: '16px',
+          boxSizing: 'border-box'
+        }}>
+          <div style={{
+            backgroundColor: '#ffffff',
+            borderRadius: '16px',
+            width: '100%',
+            maxWidth: '540px',
+            maxHeight: '92vh',
+            overflowY: 'auto',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+            border: '1px solid #e2e8f0',
+            position: 'relative'
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: '18px 24px',
+              borderBottom: '1px solid #e2e8f0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              background: 'linear-gradient(135deg, #15803d 0%, #16a34a 100%)',
+              color: '#ffffff',
+              borderRadius: '15px 15px 0 0'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{
+                  width: '38px',
+                  height: '38px',
+                  borderRadius: '10px',
+                  backgroundColor: 'rgba(255,255,255,0.2)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '20px'
+                }}>
+                  <i className="fa-solid fa-qrcode"></i>
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '700' }}>
+                    UPI / Online Payment Link
+                  </h2>
+                  <div style={{ fontSize: '12px', opacity: 0.9 }}>
+                    Appointment initiated • Scan QR or share link to pay
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowPaymentLinkModal(false)}
+                title="Close"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: '#ffffff',
+                  fontSize: '20px',
+                  cursor: 'pointer',
+                  width: '32px',
+                  height: '32px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: '50%',
+                  backgroundColor: 'rgba(255,255,255,0.15)'
+                }}
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div style={{ padding: '20px 24px' }}>
+              {/* Appointment Details Summary */}
+              <div style={{
+                backgroundColor: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: '12px',
+                padding: '14px 16px',
+                marginBottom: '16px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', fontWeight: '700' }}>Doctor</span>
+                    <div style={{ fontSize: '15px', fontWeight: '700', color: '#1e293b' }}>
+                      {paymentLinkModalData.doctorName}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#385FBF', fontWeight: '500' }}>
+                      {paymentLinkModalData.specialization}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', fontWeight: '700' }}>Amount</span>
+                    <div style={{ fontSize: '20px', fontWeight: '800', color: '#16a34a' }}>
+                      ₹{Number(paymentLinkModalData.amount || 0).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ height: '1px', backgroundColor: '#e2e8f0', margin: '8px 0' }}></div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px', fontSize: '12px', color: '#475569' }}>
+                  <div>
+                    <span style={{ color: '#94a3b8' }}>Patient: </span>
+                    <strong>{paymentLinkModalData.patientName}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94a3b8' }}>Mobile: </span>
+                    <strong>+91 {paymentLinkModalData.patientMobile}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: '#94a3b8' }}>Schedule: </span>
+                    <strong>{moment(paymentLinkModalData.date).format('DD MMM YYYY')}, {paymentLinkModalData.timeSlot}</strong>
+                  </div>
+                  {paymentLinkModalData.paymentLinkId && (
+                    <div>
+                      <span style={{ color: '#94a3b8' }}>Link ID: </span>
+                      <code style={{ fontSize: '11px', color: '#385FBF' }}>{paymentLinkModalData.paymentLinkId}</code>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* QR Code Section */}
+              {paymentLinkModalData.url && (
+                <div style={{
+                  textAlign: 'center',
+                  backgroundColor: '#f0fdf4',
+                  border: '1.5px dashed #86efac',
+                  borderRadius: '12px',
+                  padding: '16px',
+                  marginBottom: '16px'
+                }}>
+                  <div style={{ fontSize: '13px', fontWeight: '700', color: '#166534', marginBottom: '10px' }}>
+                    <i className="fa-solid fa-qrcode" style={{ marginRight: '6px' }}></i>
+                    Scan with any UPI App to Pay
+                  </div>
+                  <div style={{
+                    display: 'inline-block',
+                    backgroundColor: '#ffffff',
+                    padding: '8px',
+                    borderRadius: '10px',
+                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)',
+                    border: '1px solid #cbd5e1'
+                  }}>
+                    <img
+                      src={`https://api.qrserver.com/v1/create-qr-code/?size=170x170&margin=4&data=${encodeURIComponent(paymentLinkModalData.url)}`}
+                      alt="Payment Link QR Code"
+                      style={{ width: '160px', height: '160px', display: 'block' }}
+                    />
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#475569', marginTop: '8px', fontWeight: '500' }}>
+                    Supports PhonePe • Google Pay • Paytm • BHIM & all UPI Apps
+                  </div>
+                </div>
+              )}
+
+              {/* Payment Link Box with Copy Button */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '700', color: '#334155', display: 'block', marginBottom: '6px' }}>
+                  Payment Link URL
+                </label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    readOnly
+                    value={paymentLinkModalData.url || ''}
+                    style={{
+                      flex: 1,
+                      padding: '10px 12px',
+                      border: '1.5px solid #cbd5e1',
+                      borderRadius: '8px',
+                      fontSize: '13px',
+                      backgroundColor: '#f8fafc',
+                      color: '#1e293b',
+                      outline: 'none',
+                      fontFamily: 'monospace'
+                    }}
+                    onClick={(e) => e.target.select()}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleCopyLink(paymentLinkModalData.url)}
+                    style={{
+                      padding: '10px 16px',
+                      backgroundColor: copiedLink ? '#16a34a' : '#385FBF',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontWeight: '700',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      transition: 'background-color 0.2s',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    <i className={`fa-solid ${copiedLink ? 'fa-check' : 'fa-copy'}`}></i>
+                    {copiedLink ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Sharing & Action Buttons */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '12px' }}>
+                {/* WhatsApp Share Button */}
+                <button
+                  type="button"
+                  onClick={() => handleShareWhatsApp(paymentLinkModalData)}
+                  style={{
+                    width: '100%',
+                    padding: '12px 18px',
+                    backgroundColor: '#25D366',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '10px',
+                    fontWeight: '700',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '10px',
+                    boxShadow: '0 4px 10px rgba(37, 211, 102, 0.3)',
+                    transition: 'opacity 0.2s'
+                  }}
+                >
+                  <i className="fa-brands fa-whatsapp" style={{ fontSize: '20px' }}></i>
+                  Share via WhatsApp (+91 {paymentLinkModalData.patientMobile})
+                </button>
+
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  {/* Open Link & Pay in new tab */}
+                  <button
+                    type="button"
+                    onClick={() => window.open(paymentLinkModalData.url, '_blank')}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      backgroundColor: '#385FBF',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '8px',
+                      fontWeight: '700',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <i className="fa-solid fa-arrow-up-right-from-square"></i>
+                    Open & Pay Now
+                  </button>
+
+                  {/* Native Share / More Apps */}
+                  <button
+                    type="button"
+                    onClick={() => handleNativeShare(paymentLinkModalData)}
+                    style={{
+                      flex: 1,
+                      padding: '10px 14px',
+                      backgroundColor: '#f1f5f9',
+                      color: '#334155',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '8px',
+                      fontWeight: '700',
+                      fontSize: '13px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '6px'
+                    }}
+                  >
+                    <i className="fa-solid fa-share-nodes"></i>
+                    Share via Apps
+                  </button>
+                </div>
+              </div>
+
+              {/* Information Note */}
+              <div style={{
+                backgroundColor: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                borderRadius: '8px',
+                padding: '10px 12px',
+                fontSize: '12px',
+                color: '#64748b',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <i className="fa-solid fa-circle-info" style={{ color: '#385FBF', fontSize: '14px' }}></i>
+                <span>Payment link is active. The patient can complete payment at their convenience.</span>
+              </div>
+
+              {/* Modal Footer / Close Button */}
+              <div style={{
+                marginTop: '16px',
+                paddingTop: '14px',
+                borderTop: '1px solid #e2e8f0',
+                textAlign: 'center'
+              }}>
+                <button
+                  type="button"
+                  onClick={() => setShowPaymentLinkModal(false)}
+                  style={{
+                    width: '100%',
+                    padding: '11px',
+                    backgroundColor: '#e2e8f0',
+                    color: '#1e293b',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontWeight: '700',
+                    fontSize: '14px',
+                    cursor: 'pointer',
+                    transition: 'background-color 0.2s'
+                  }}
+                >
+                  Close Window
+                </button>
               </div>
             </div>
           </div>

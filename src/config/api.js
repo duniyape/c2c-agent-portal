@@ -6,7 +6,7 @@
 
 // DOMAIN ko change karke aap local ya live pe test kar sakte hain.
 // Abhi ye aapke Local server (ya IP address) par set hai:
-export const DOMAIN = 'http://192.168.29.39:5001'; // Ya aap 'http://192.168.29.39:5001' likh sakte hain ya 'https://api.care2connect.in'
+export const DOMAIN = 'https://api.care2connect.in'; // Ya aap 'http://192.168.29.39:5001' likh sakte hain ya 'https://api.care2connect.in'
 
 // --------------------------------------------------------------------------
 // AUTOMATICALLY GENERATED ROUTES — DO NOT MODIFY BELOW
