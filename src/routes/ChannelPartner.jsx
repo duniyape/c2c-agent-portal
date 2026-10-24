@@ -70,6 +70,11 @@ const ChannelPartner = () => {
       if (res.data && res.data.success) {
         const list = res.data.data || [];
         setRequests(list);
+        if (list.length > 0) {
+          localStorage.setItem('channelPartnerApplied', 'true');
+          const isAppr = list.some((r) => r.status === 'approved');
+          localStorage.setItem('channelPartnerStatus', isAppr ? 'approved' : (list[0].status || 'pending'));
+        }
       }
     } catch (error) {
       console.error('Error fetching channel partner requests:', error);
@@ -123,6 +128,8 @@ const ChannelPartner = () => {
       });
 
       if (res.data && res.data.success) {
+        localStorage.setItem('channelPartnerApplied', 'true');
+        localStorage.setItem('channelPartnerStatus', 'pending');
         toast.success(res.data.message || 'Channel partner request submitted successfully!');
         setRemarks('');
         setShowForm(false);

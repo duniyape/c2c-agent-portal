@@ -5,6 +5,7 @@ import axios from 'axios';
 import moment from 'moment';
 import { useLoader } from '../loader/LoaderContext';
 import { DOMAIN, API_BASE_URL, BASE_URL } from '../config/api';
+import { ensureChannelPartner } from '../utils/channelPartnerHelper';
 
 /**
  * =========================================================================
@@ -220,11 +221,12 @@ const DrAppoint = () => {
     }
   };
 
-  // Preload Razorpay SDK and fetch agent wallet balance on component mount
+  // Check Channel Partner and preload Razorpay SDK and fetch agent wallet balance on component mount
   useEffect(() => {
+    ensureChannelPartner(navigate);
     loadRazorpayScript();
     fetchAgentWallet();
-  }, []);
+  }, [navigate]);
 
   // Auto-calculate Age on DOB change
   const handleDobChange = (e) => {
@@ -283,7 +285,7 @@ const DrAppoint = () => {
           Swal.fire({
             icon: 'info',
             title: 'No Postal Record Found',
-            text: `Pincode ${val} ka record nahi mila. Kripya City aur State enter karein.`,
+            text: `No record found for Pincode ${val}. Please enter City and State manually.`,
             confirmButtonColor: '#385FBF',
           });
         }
@@ -703,6 +705,10 @@ const DrAppoint = () => {
 
   // STEP 2: AGENT CREATE ORDER & APPOINTMENT CONFIRMATION (EXECUTED AFTER REVIEW CONFIRMATION)
   const executeBookingAndPayment = async () => {
+    // 0. Ensure Channel Partner is approved before booking
+    const isApprovedCP = await ensureChannelPartner(navigate);
+    if (!isApprovedCP) return;
+
     // 1. Strict validation: Wallet balance check against Total Payable (Fee + Markup)
     const numericFee = getNumericFee();
     const currentMarkup = Number(markupAmount || 0);
@@ -714,17 +720,17 @@ const DrAppoint = () => {
         title: 'Insufficient Wallet Balance',
         html: `
           <div style="font-size: 14px; text-align: left; padding: 12px; background: #fef2f2; border: 1.5px solid #fca5a5; border-radius: 8px;">
-            <p style="margin: 0 0 6px 0; color: #991b1b; font-weight: 700;">Aapke wallet me paryapt balance nahi hai!</p>
+            <p style="margin: 0 0 6px 0; color: #991b1b; font-weight: 700;">Insufficient balance in your wallet!</p>
             <p style="margin: 4px 0; color: #374151;">Available Balance: <strong style="color: #dc2626;">₹${Number(walletBalance || 0).toFixed(2)}</strong></p>
             <p style="margin: 4px 0; color: #374151;">Consultation Fee: ₹${numericFee.toFixed(2)}</p>
             ${currentMarkup > 0 ? `<p style="margin: 4px 0; color: #2563eb;">Markup Amount: ₹${currentMarkup.toFixed(2)}</p>` : ''}
             <p style="margin: 4px 0; color: #374151;">Total Payable: <strong style="color: #1e3a8a;">₹${totalPayable.toFixed(2)}</strong></p>
             <p style="margin: 4px 0; color: #374151;">Shortage: <strong style="color: #dc2626;">₹${(totalPayable - Number(walletBalance || 0)).toFixed(2)}</strong></p>
           </div>
-          <p style="margin-top: 12px; font-size: 13px; color: #64748b;">Kripya wallet recharge karne ke baad appointment book karein.</p>
+          <p style="margin-top: 12px; font-size: 13px; color: #64748b;">Please recharge your wallet before booking this appointment.</p>
         `,
         confirmButtonColor: '#385FBF',
-        confirmButtonText: 'Theek hai',
+        confirmButtonText: 'OK',
       });
       return;
     }
@@ -958,6 +964,10 @@ const DrAppoint = () => {
 
   // STEP 2B: CREATE ONLINE / UPI PAYMENT LINK VIA API (/c2c_app/api/create-payment-link)
   const handleCreatePaymentLink = async () => {
+    // 0. Ensure Channel Partner is approved before generating payment link
+    const isApprovedCP = await ensureChannelPartner(navigate);
+    if (!isApprovedCP) return;
+
     const numericFee = getNumericFee();
     const currentMarkup = Number(markupAmount || 0);
     const totalPayable = numericFee + currentMarkup;
@@ -2083,7 +2093,7 @@ const DrAppoint = () => {
                           gap: '6px'
                         }}>
                           <i className="fa-solid fa-triangle-exclamation"></i>
-                          Aapke wallet me ₹{numericFee.toFixed(2)} se kam balance hai. Appointment book karne ke liye pehle wallet recharge karein.
+                          Your wallet balance is less than ₹{numericFee.toFixed(2)}. Please recharge your wallet to book this appointment.
                         </div>
                       )}
                     </div>

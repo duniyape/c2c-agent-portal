@@ -4,6 +4,7 @@ import axios from 'axios';
 import moment from 'moment';
 import Swal from 'sweetalert2';
 import { DOMAIN, API_BASE_URL } from '../config/api';
+import { ensureChannelPartner } from '../utils/channelPartnerHelper';
 
 const AppointlmentList = () => {
   const navigate = useNavigate();
@@ -285,10 +286,14 @@ const AppointlmentList = () => {
 
   // Initial load
   useEffect(() => {
-    fetchDoctors();
-    fetchAgentMarkup();
-    fetchAppointments(fromDate, toDate, statusFilter);
-  }, []);
+    ensureChannelPartner(navigate).then((allowed) => {
+      if (allowed) {
+        fetchDoctors();
+        fetchAgentMarkup();
+        fetchAppointments(fromDate, toDate, statusFilter);
+      }
+    });
+  }, [navigate]);
 
   const handleApplyFilter = (e) => {
     e?.preventDefault();
