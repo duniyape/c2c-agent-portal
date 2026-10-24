@@ -9,8 +9,8 @@ import { compressImage } from "../utils/imageCompressor";
 const WalletScreen = () => {
   const { showLoader, hideLoader } = useLoader();
 
-  // Active Tab: 'limit' | 'wallet'
-  const [activeTab, setActiveTab] = useState('limit');
+  // Active Tab: 'limit' | 'wallet' - Default to 'wallet' as requested
+  const [activeTab, setActiveTab] = useState('wallet');
 
   // Limit Wallet States
   const [userdata, setuserdata] = useState({});
@@ -18,17 +18,33 @@ const WalletScreen = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [walletId, setWalletId] = useState(null);
+  const [limitWalletNotFound, setLimitWalletNotFound] = useState(false);
+  const [limitLoading, setLimitLoading] = useState(true);
 
   // Saving Wallet States
   const [savingWalletData, setSavingWalletData] = useState(null);
   const [savingWalletId, setSavingWalletId] = useState(null);
   const [savingTransactions, setSavingTransactions] = useState([]);
   const [savingCurrentPage, setSavingCurrentPage] = useState(1);
+  const [savingWalletNotFound, setSavingWalletNotFound] = useState(false);
+  const [savingLoading, setSavingLoading] = useState(true);
 
   // Agent UID from LocalStorage
-  const [UID, setUID] = useState('');
+  const [UID, setUID] = useState(() => localStorage.getItem("AUID") || '');
+
   useEffect(() => {
-    setUID(localStorage.getItem("AUID") || '');
+    if (!UID) {
+      setUID(localStorage.getItem("AUID") || '');
+    }
+  }, [UID]);
+
+  // Safety fallback timeout to prevent infinite loader
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setLimitLoading(false);
+      setSavingLoading(false);
+    }, 8000);
+    return () => clearTimeout(timer);
   }, []);
 
   // Modal & Deposit Form States
@@ -62,10 +78,95 @@ const WalletScreen = () => {
     getData();
   }, []);
 
-  // 1. Fetch Limit Wallet Details
-  const fetchWalletDetails = useCallback(async () => {
-    if (!UID) return;
+  // 1. Fetch Saving Wallet Details & Transactions directly by agent_id
+  const fetchSavingWalletDetails = useCallback(async (agentMongoId) => {
+    let aid = agentMongoId || userdata?.agent_id || localStorage.getItem('agent_id');
+
+    if (!aid && UID) {
+      try {
+        const headers = { 'ngrok-skip-browser-warning': 'true' };
+        const listRes = await axios.get(`${BASE_URL}/wallet/list`, { timeout: 30000, headers });
+        const wallets = listRes.data?.data || [];
+        const match = wallets.find(w => 
+          (w.agentCode || '').toLowerCase() === UID.toLowerCase() ||
+          (w.agent_id || '').toLowerCase() === UID.toLowerCase()
+        );
+        if (match?.agent_id) {
+          aid = match.agent_id;
+          localStorage.setItem('agent_id', aid);
+        }
+      } catch (e) {
+        console.warn('Error resolving agent_id in saving wallet:', e);
+      }
+    }
+
+    if (!aid && UID) {
+      try {
+        const headers = { 'ngrok-skip-browser-warning': 'true' };
+        const agentRes = await axios.get(`${BASE_URL}/agents`, { timeout: 30000, headers });
+        let agentList = Array.isArray(agentRes.data)
+          ? agentRes.data
+          : agentRes.data?.data || agentRes.data?.agents || [];
+        const foundAgent = agentList.find((a) => {
+          const codes = [
+            a.agentCode, a.AgentCode, a.agent_code,
+            a.memberId, a.MemberNo, a.memberNo, a.code
+          ].map((v) => String(v || '').toLowerCase().trim());
+          return codes.includes(UID.toLowerCase());
+        });
+        if (foundAgent) {
+          aid = String(foundAgent._id?.$oid || foundAgent._id || foundAgent.id || '');
+          if (aid) localStorage.setItem('agent_id', aid);
+        }
+      } catch (e) {
+        console.warn('Error resolving agent from /agents:', e);
+      }
+    }
+
+    const targetAid = aid || UID;
+
+    if (!targetAid) {
+      setSavingWalletNotFound(true);
+      setSavingWalletData(null);
+      setSavingWalletId(null);
+      setSavingLoading(false);
+      return;
+    }
+
     try {
+      setSavingLoading(true);
+      const headers = { 'ngrok-skip-browser-warning': 'true' };
+      const res = await axios.get(`${BASE_URL}/saving-wallet/details?agent_id=${targetAid}`, { timeout: 30000, headers });
+      if (res.data?.success && res.data?.data?.wallet) {
+        setSavingWalletData(res.data.data.wallet);
+        setSavingWalletId(res.data.data.wallet._id);
+        if (res.data.data.transactions) {
+          setSavingTransactions(res.data.data.transactions);
+        }
+        setSavingWalletNotFound(false);
+      } else {
+        setSavingWalletData(null);
+        setSavingWalletId(null);
+        setSavingWalletNotFound(true);
+      }
+    } catch (err) {
+      console.error('Error fetching saving wallet details directly by agent_id:', err);
+      setSavingWalletData(null);
+      setSavingWalletId(null);
+      setSavingWalletNotFound(true);
+    } finally {
+      setSavingLoading(false);
+    }
+  }, [userdata?.agent_id, UID]);
+
+  // 2. Fetch Limit Wallet Details
+  const fetchWalletDetails = useCallback(async () => {
+    if (!UID) {
+      setLimitLoading(false);
+      return;
+    }
+    try {
+      setLimitLoading(true);
       const headers = { 'ngrok-skip-browser-warning': 'true' };
       const listRes = await axios.get(`${BASE_URL}/wallet/list`, { timeout: 30000, headers });
       const wallets = listRes.data?.data || [];
@@ -91,26 +192,40 @@ const WalletScreen = () => {
 
           setuserdata(mappedData);
           setWalletId(match._id);
+          setLimitWalletNotFound(false);
 
           // Once agentMongoId is identified, cache and fetch saving wallet directly
           if (w.agent_id) {
             localStorage.setItem('agent_id', w.agent_id);
             fetchSavingWalletDetails(w.agent_id);
           }
+        } else {
+          setuserdata(null);
+          setWalletId(null);
+          setLimitWalletNotFound(true);
         }
       } else {
         console.warn('No limit wallet found for agent:', UID);
+        setuserdata(null);
+        setWalletId(null);
+        setLimitWalletNotFound(true);
       }
     } catch (error) {
       console.error('Error fetching limit wallet details:', error);
+      setuserdata(null);
+      setWalletId(null);
+      setLimitWalletNotFound(true);
+    } finally {
+      setLimitLoading(false);
     }
-  }, [UID]);
+  }, [UID, fetchSavingWalletDetails]);
 
   useEffect(() => {
     fetchWalletDetails();
-  }, [fetchWalletDetails]);
+    fetchSavingWalletDetails();
+  }, [fetchWalletDetails, fetchSavingWalletDetails]);
 
-  // 2. Fetch Limit Wallet Transactions
+  // 3. Fetch Limit Wallet Transactions
   const fetchApiTransactions = useCallback(async () => {
     if (!walletId) return;
     try {
@@ -130,27 +245,6 @@ const WalletScreen = () => {
   useEffect(() => {
     fetchApiTransactions();
   }, [fetchApiTransactions]);
-
-  // 3. Fetch Saving Wallet Details & Transactions directly by agent_id
-  const fetchSavingWalletDetails = useCallback(async (agentMongoId) => {
-    const aid = agentMongoId || userdata?.agent_id || localStorage.getItem('agent_id');
-    if (!aid) return;
-    try {
-      const headers = { 'ngrok-skip-browser-warning': 'true' };
-      const res = await axios.get(`${BASE_URL}/saving-wallet/details?agent_id=${aid}`, { timeout: 30000, headers });
-      if (res.data?.success && res.data?.data) {
-        if (res.data.data.wallet) {
-          setSavingWalletData(res.data.data.wallet);
-          setSavingWalletId(res.data.data.wallet._id);
-        }
-        if (res.data.data.transactions) {
-          setSavingTransactions(res.data.data.transactions);
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching saving wallet details directly by agent_id:', err);
-    }
-  }, [userdata?.agent_id]);
 
   // 4. Fetch Saving Wallet Transactions
   const fetchSavingTransactions = useCallback(async (sWalletId) => {
@@ -185,10 +279,10 @@ const WalletScreen = () => {
   useEffect(() => {
     if (activeTab === 'wallet') {
       const aid = userdata?.agent_id || localStorage.getItem('agent_id');
-      if (aid) {
-        fetchSavingWalletDetails(aid);
-      } else if (savingWalletId) {
+      if (savingWalletId) {
         fetchSavingTransactions(savingWalletId);
+      } else if (aid) {
+        fetchSavingWalletDetails(aid);
       }
     }
   }, [activeTab, savingWalletId, userdata?.agent_id, fetchSavingTransactions, fetchSavingWalletDetails]);
@@ -196,7 +290,7 @@ const WalletScreen = () => {
   // Handle open deposit modal
   const handleOpenDepositModal = () => {
     if (activeTab === 'limit') {
-      const calcAmount = userdata.Amount !== undefined && userdata.Balance !== undefined
+      const calcAmount = userdata?.Amount !== undefined && userdata?.Balance !== undefined
         ? Math.max(0, userdata.Amount - userdata.Balance).toFixed(2)
         : '';
       setamount(calcAmount);
@@ -218,7 +312,7 @@ const WalletScreen = () => {
     }
 
     if (!isSaving) {
-      const maxAllowed = userdata.Amount !== undefined && userdata.Balance !== undefined
+      const maxAllowed = userdata?.Amount !== undefined && userdata?.Balance !== undefined
         ? userdata.Amount - userdata.Balance
         : null;
 
@@ -354,15 +448,20 @@ const WalletScreen = () => {
 
   // Helper values for current active tab
   const isSaving = activeTab === 'wallet';
+  const isLoading = isSaving ? savingLoading : limitLoading;
+  const hasLimitWallet = !limitWalletNotFound && Boolean(walletId || (userdata && (userdata.LoanCode || userdata.Amount !== undefined)));
+  const hasSavingWallet = !savingWalletNotFound && Boolean(savingWalletData && (savingWalletData._id || savingWalletId));
+  const hasCurrentWallet = isSaving ? hasSavingWallet : hasLimitWallet;
+
   const memberName = isSaving
-    ? (savingWalletData?.agentName || userdata.MemberName || '')
-    : (userdata.MemberName || '');
+    ? (savingWalletData?.agentName || userdata?.MemberName || '')
+    : (userdata?.MemberName || '');
   const accountCode = isSaving
     ? (savingWalletData?.walletNumber || 'Saving Wallet')
-    : (userdata.LoanCode || '');
+    : (userdata?.LoanCode || '');
   const currentBalance = isSaving
     ? (savingWalletData?.balance ?? 0)
-    : (userdata.Balance ?? 0);
+    : (userdata?.Balance ?? 0);
 
   // Pagination for saving wallet
   const savingPageSize = 10;
@@ -427,8 +526,76 @@ const WalletScreen = () => {
         </div>
       </div>
 
-      {/* ── HEADER CARD ─────────────────────────────────────── */}
-      <div style={styles.header}>
+      {/* ── FETCHING DATA LOADER OR CONTENT ──────────────────── */}
+      {isLoading ? (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '50px 20px',
+          backgroundColor: '#ffffff',
+          borderRadius: '16px',
+          border: '1px solid #EAE3D3',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.03)',
+          margin: '20px auto',
+          maxWidth: '380px',
+          textAlign: 'center',
+        }}>
+          <div style={{
+            width: '42px',
+            height: '42px',
+            border: '4px solid #EAE3D3',
+            borderTop: '4px solid #514579',
+            borderRadius: '50%',
+            animation: 'walletSpin 0.75s linear infinite',
+            marginBottom: '14px',
+          }} />
+          <style>{`
+            @keyframes walletSpin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+          <div style={{ fontSize: '16px', fontWeight: '700', color: '#514579', marginBottom: '4px' }}>
+            Fetching Data...
+          </div>
+          <div style={{ fontSize: '13px', color: '#888' }}>
+            Please wait while your {isSaving ? 'wallet' : 'limit'} details are being loaded.
+          </div>
+        </div>
+      ) : !hasCurrentWallet ? (
+        /* ── EMPTY STATE WHEN WALLET NOT FOUND ───────────────── */
+        <div style={styles.emptyCard}>
+          <div style={styles.emptyIconCircle}>
+            <i className="fa-solid fa-wallet" />
+          </div>
+          <div style={styles.emptyTitle}>
+            {!isSaving ? "No limit wallet found" : "No wallet found"}
+          </div>
+          <div style={styles.emptySubtitle}>
+            {!isSaving
+              ? `No limit wallet is registered for this agent account (${UID || 'Agent'}).`
+              : `No saving wallet is registered for this agent account (${UID || 'Agent'}).`}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (!isSaving) {
+                fetchWalletDetails();
+              } else {
+                fetchSavingWalletDetails();
+              }
+            }}
+            style={styles.refreshBtn}
+          >
+            <i className="fa-solid fa-rotate-right" /> Refresh
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* ── HEADER CARD ─────────────────────────────────────── */}
+          <div style={styles.header}>
         <div style={styles.profileRow}>
           {memberName && (
             <div style={styles.avatar}>
@@ -444,7 +611,7 @@ const WalletScreen = () => {
           Current Balance: <span style={styles.balanceValue}>₹{currentBalance}</span>
         </div>
         {!isSaving ? (
-          <div style={styles.limitText}>Total Limit: ₹{userdata.Amount || 0}</div>
+          <div style={styles.limitText}>Total Limit: ₹{userdata?.Amount || 0}</div>
         ) : (
           <div style={styles.limitText}>
             Total Deposited: ₹{savingWalletData?.totalDeposit ?? 0}
@@ -589,6 +756,8 @@ const WalletScreen = () => {
               </button>
             </div>
           )}
+        </>
+      )}
         </>
       )}
 
@@ -814,6 +983,55 @@ const styles = {
     justifyContent: "space-between",
     alignItems: "center",
     fontSize: 14,
+  },
+  emptyCard: {
+    backgroundColor: "#ffffff",
+    borderRadius: 16,
+    border: "1px solid #EAE3D3",
+    boxShadow: "0 4px 16px rgba(81, 69, 121, 0.05)",
+    padding: "45px 20px",
+    textAlign: "center",
+    margin: "10px 0 25px 0",
+  },
+  emptyIconCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: "50%",
+    backgroundColor: "#F5F1E7",
+    color: "#857326",
+    fontSize: 26,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    margin: "0 auto 16px auto",
+    border: "1px solid #EAE3D3",
+  },
+  emptyTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#514579",
+    marginBottom: 8,
+  },
+  emptySubtitle: {
+    fontSize: 14,
+    color: "#6b7280",
+    maxWidth: 320,
+    margin: "0 auto 18px auto",
+    lineHeight: "1.5",
+  },
+  refreshBtn: {
+    backgroundColor: "#F5F1E7",
+    border: "1px solid #d4cbb8",
+    borderRadius: 8,
+    padding: "8px 18px",
+    color: "#514579",
+    fontWeight: "600",
+    cursor: "pointer",
+    fontSize: 13,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    transition: "all 0.2s ease",
   },
 };
 

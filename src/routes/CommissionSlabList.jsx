@@ -54,7 +54,7 @@ const CommissionSlabList = () => {
           }}
           onClick={() => navigate('/')}
         />
-         कमीशन Slabs
+        Commission Slabs
       </h2>
 
       {/* Filter Options */}
