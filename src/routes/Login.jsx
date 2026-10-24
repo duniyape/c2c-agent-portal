@@ -3,7 +3,7 @@ import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "react-toastify";
 import { useLoader } from "../loader/LoaderContext";
-import { BASE_URL } from '../config/api';
+import { BASE_URL } from "../config/api";
 
 const Login = () => {
   const { showLoader, hideLoader } = useLoader();
@@ -13,46 +13,52 @@ const Login = () => {
 
   const navigate = useNavigate();
 
-  const handleLogin = async () => {
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
+
     if (!username || !password) {
       toast.error("Please fill in both fields.");
       return;
     }
-    
+
     try {
       showLoader();
-      // Use BASE_URL + /agent/login
       const api = `${BASE_URL}/agent/login`;
       const payload = {
         agentCode: username,
-        password: password
+        password: password,
       };
-      
+
       const res = await axios.post(api, payload);
-      
+
       if (res.data && res.data.success) {
         const user = res.data.data;
         console.log("Login successful:", user);
-        
+
         // Save user data to localStorage
-        localStorage.setItem('AUID', user.agentCode || username);
-        localStorage.setItem('agentCode', user.agentCode || username);
+        localStorage.setItem("AUID", user.agentCode || username);
+        localStorage.setItem("agentCode", user.agentCode || username);
         if (user._id || user.agent_id || user.id) {
-          localStorage.setItem('agent_id', user._id || user.agent_id || user.id);
+          localStorage.setItem("agent_id", user._id || user.agent_id || user.id);
         }
-        localStorage.setItem('Name', `${user.FirstName || ''} ${user.LastName || ''}`.trim());
-        localStorage.setItem('MID', user.memberId || '');
-        
+        localStorage.setItem(
+          "Name",
+          `${user.FirstName || ""} ${user.LastName || ""}`.trim()
+        );
+        localStorage.setItem("MID", user.memberId || "");
+
         // Save additional agent-specific details returned from the backend
-        if (user.isAgent !== undefined) localStorage.setItem('isAgent', user.isAgent);
-        if (user.agentStatus) localStorage.setItem('agentStatus', user.agentStatus);
-        if (user.branchCode) localStorage.setItem('branchCode', user.branchCode);
-        if (user.branchName) localStorage.setItem('branchName', user.branchName);
-        if (user.designationCode) localStorage.setItem('designationCode', user.designationCode);
-        if (user.designationName) localStorage.setItem('designationName', user.designationName);
-        
+        if (user.isAgent !== undefined) localStorage.setItem("isAgent", user.isAgent);
+        if (user.agentStatus) localStorage.setItem("agentStatus", user.agentStatus);
+        if (user.branchCode) localStorage.setItem("branchCode", user.branchCode);
+        if (user.branchName) localStorage.setItem("branchName", user.branchName);
+        if (user.designationCode)
+          localStorage.setItem("designationCode", user.designationCode);
+        if (user.designationName)
+          localStorage.setItem("designationName", user.designationName);
+
         toast.success(res.data.message || "Login successful!");
-        navigate('/');
+        navigate("/");
       } else {
         toast.error(res.data?.message || "Invalid username or password.");
       }
@@ -64,135 +70,203 @@ const Login = () => {
     }
   };
 
-
   return (
     <div
       style={{
         minHeight: "100vh",
+        minHeight: "100dvh",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
         background: "linear-gradient(135deg, #1e3c72, #2a5298, #ff4e50, #f9d423)",
         backgroundSize: "cover",
+        backgroundPosition: "center",
         fontFamily: "Arial, sans-serif",
-        padding: "1rem"
+        padding: "1rem",
+        boxSizing: "border-box",
       }}
     >
-      <div
-        style={{
-          background: "rgba(255, 255, 255, 0.1)",
-          borderRadius: "10px",
-          padding: "2rem",
-          width: "100%",
-          maxWidth: "400px",
-          boxShadow: "0 8px 32px 0 rgba(31, 38, 135, 0.37)",
-          backdropFilter: "blur(10px)",
-          WebkitBackdropFilter: "blur(10px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "1rem"
-        }}
-      >
-        <div style={{textAlign:'center'}}>
+      <style>{`
+        .login-box {
+          background: rgba(255, 255, 255, 0.15);
+          border-radius: 16px;
+          padding: 2rem;
+          width: 100%;
+          max-width: 400px;
+          box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+          box-sizing: border-box;
+        }
 
-       
-      <img src="mlogo.png" alt="img" style={{width:150,height:150,textAlign:'center'}}/>
-       </div>
-        <h2 style={{ textAlign: "center", color: "white" }}>Login</h2>
+        .login-logo-wrap {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+        }
 
-        <div style={{ position: "relative" }}>
+        .login-logo-img {
+          width: 130px;
+          height: 130px;
+          object-fit: contain;
+          display: block;
+          margin: 0 auto;
+          border-radius: 50%;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        .login-input-field {
+          width: 100%;
+          padding: 0.75rem 0.75rem 0.75rem 2.5rem;
+          border-radius: 8px;
+          border: none;
+          outline: none;
+          font-size: 1rem;
+          background-color: #ffffff;
+          color: #222222;
+          box-sizing: border-box;
+          transition: box-shadow 0.2s ease;
+        }
+
+        .login-input-field:focus {
+          box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.4);
+        }
+
+        .login-submit-btn {
+          padding: 0.75rem;
+          border-radius: 20px;
+          border: none;
+          background-color: rgba(255, 255, 255, 0.85);
+          color: #1e3c72;
+          font-size: 1rem;
+          font-weight: bold;
+          cursor: pointer;
+          transition: background-color 0.3s ease, transform 0.1s ease;
+          width: 100%;
+        }
+
+        .login-submit-btn:hover {
+          background-color: #ffffff;
+        }
+
+        .login-submit-btn:active {
+          transform: scale(0.99);
+        }
+
+        @media (max-width: 480px) {
+          .login-box {
+            padding: 1.5rem 1.25rem;
+            max-width: 100%;
+            border-radius: 14px;
+          }
+
+          .login-logo-img {
+            width: 110px;
+            height: 110px;
+          }
+
+          .login-input-field {
+            font-size: 16px; /* Prevents auto-zoom on mobile browsers */
+            padding: 0.7rem 0.75rem 0.7rem 2.4rem;
+          }
+        }
+      `}</style>
+
+      <div className="login-box">
+        {/* Centered Logo */}
+        <div className="login-logo-wrap">
+          <img
+            src="/mlogo.png"
+            alt="Local Prime Logo"
+            className="login-logo-img"
+          />
+        </div>
+
+        <h2 style={{ textAlign: "center", color: "white", margin: "0" }}>Login</h2>
+
+        <form
+          onSubmit={handleLogin}
+          style={{ display: "flex", flexDirection: "column", gap: "1rem", width: "100%" }}
+        >
+          {/* User Name */}
+          <div style={{ position: "relative", width: "100%" }}>
             <i
-                className="fas fa-user"
-                style={{
+              className="fas fa-user"
+              style={{
                 position: "absolute",
                 top: "50%",
                 left: "12px",
                 transform: "translateY(-50%)",
-                color: "#aaa",
-                }}
-            />
-            <input
-                type="text"
-                placeholder="User Name"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                style={{
-                padding: "0.75rem 0.75rem 0.75rem 2.5rem", // left padding for icon
-                borderRadius: "5px",
-                border: "none",
-                outline: "none",
+                color: "#777",
                 fontSize: "1rem",
-                width: "100%",
-                }}
+                pointerEvents: "none",
+              }}
             />
-            </div>
-
-            <div style={{ position: "relative" }}>
-                <i
-                    className="fas fa-lock"
-                    style={{
-                    position: "absolute",
-                    top: "50%",
-                    left: "12px",
-                    transform: "translateY(-50%)",
-                    color: "#aaa",
-                    }}
-                />  
-                <input
-                    type="password"
-                    placeholder="Password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    style={{
-                    padding: "0.75rem 0.75rem 0.75rem 2.5rem",
-                    borderRadius: "5px",
-                    border: "none",
-                    outline: "none",
-                    fontSize: "1rem",
-                    width: "100%",
-                    }}
-                />
-                </div>
-
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            fontSize: "0.9rem",
-            color: "white",
-          }}
-        >
-          <label>
             <input
-              type="checkbox"
-              checked={remember}
-              onChange={() => setRemember(!remember)}
-            />{" "}
-            Remember Me
-          </label>
-          {/* <a href="#" style={{ color: "#eee", textDecoration: "underline" }}>
-            Forgot?
-          </a> */}
-        </div>
+              type="text"
+              placeholder="User Name"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="login-input-field"
+              autoComplete="username"
+            />
+          </div>
 
-        <button
-          onClick={handleLogin}
-          style={{
-            padding: "0.75rem",
-            borderRadius: "20px",
-            border: "none",
-            backgroundColor: "#ffffffaa",
-            fontSize: "1rem",
-            fontWeight: "bold",
-            cursor: "pointer",
-            transition: "background 0.3s ease",
-          }}
-          onMouseOver={(e) => (e.target.style.backgroundColor = "#fff")}
-          onMouseOut={(e) => (e.target.style.backgroundColor = "#ffffffaa")}
-        >
-          Login
-        </button>
+          {/* Password */}
+          <div style={{ position: "relative", width: "100%" }}>
+            <i
+              className="fas fa-lock"
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: "12px",
+                transform: "translateY(-50%)",
+                color: "#777",
+                fontSize: "1rem",
+                pointerEvents: "none",
+              }}
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="login-input-field"
+              autoComplete="current-password"
+            />
+          </div>
+
+          {/* Remember Me */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              fontSize: "0.9rem",
+              color: "white",
+            }}
+          >
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={() => setRemember(!remember)}
+                style={{ cursor: "pointer" }}
+              />
+              <span>Remember Me</span>
+            </label>
+          </div>
+
+          {/* Login Button */}
+          <button type="submit" className="login-submit-btn">
+            Login
+          </button>
+        </form>
       </div>
     </div>
   );
