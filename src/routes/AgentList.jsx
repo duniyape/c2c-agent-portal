@@ -112,6 +112,61 @@ const AgentList = () => {
         Agent List
       </h2>
 
+      {/* Logged-in Agent Profile Card (Up side in Agent List) */}
+      <div
+        style={{
+          margin: '0 20px 14px',
+          padding: '12px 14px',
+          background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)',
+          borderRadius: 12,
+          border: '1px solid #E3DAC8',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: '50%',
+              backgroundColor: '#385FBF',
+              color: '#ffffff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontWeight: 700,
+              fontSize: 15,
+              flexShrink: 0,
+            }}
+          >
+            {(localStorage.getItem('Name') || 'A').charAt(0).toUpperCase()}
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b' }}>
+              {localStorage.getItem('Name') || 'My Profile'}
+            </div>
+            <div style={{ fontSize: 11, color: '#b4a383', fontWeight: 600 }}>
+              Agent Code: {localStorage.getItem('agentCode') || localStorage.getItem('AUID') || 'N/A'} {localStorage.getItem('designationName') ? `• ${localStorage.getItem('designationName')}` : ''}
+            </div>
+          </div>
+        </div>
+        <span
+          style={{
+            fontSize: 10,
+            backgroundColor: '#e6f4ea',
+            color: '#137333',
+            fontWeight: 700,
+            padding: '2px 8px',
+            borderRadius: 10,
+          }}
+        >
+          {localStorage.getItem('agentStatus') || 'Active'}
+        </span>
+      </div>
+
       {/* Search */}
       <div style={{ padding: '0 20px 16px' }}>
         <input

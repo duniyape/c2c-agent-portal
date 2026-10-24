@@ -36,6 +36,8 @@ const Login = () => {
         console.log("Login successful:", user);
 
         // Save user data to localStorage
+        localStorage.setItem("user", JSON.stringify(user));
+        localStorage.setItem("agentProfile", JSON.stringify(user));
         localStorage.setItem("AUID", user.agentCode || username);
         localStorage.setItem("agentCode", user.agentCode || username);
         if (user._id || user.agent_id || user.id) {
@@ -46,6 +48,12 @@ const Login = () => {
           `${user.FirstName || ""} ${user.LastName || ""}`.trim()
         );
         localStorage.setItem("MID", user.memberId || "");
+        if (user.MobileNo || user.mobile || user.phone) {
+          localStorage.setItem("MobileNo", user.MobileNo || user.mobile || user.phone);
+        }
+        if (user.Email || user.email) {
+          localStorage.setItem("Email", user.Email || user.email);
+        }
 
         // Save additional agent-specific details returned from the backend
         if (user.isAgent !== undefined) localStorage.setItem("isAgent", user.isAgent);
